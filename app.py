@@ -1,6 +1,8 @@
 import os, json, time, base64, datetime
 import requests, pytz, gspread
 from google.oauth2.service_account import Credentials
+import re  # ← 新增
+
 
 # ========= ENV from GitHub Secrets ==========
 SPREADSHEET_ID = os.environ["SPREADSHEET_ID"]
@@ -37,6 +39,66 @@ def to_list(v):
 
 def b64_auth(user, app_password):
     return "Basic " + base64.b64encode(f"{user}:{app_password}".encode()).decode()
+
+RAW_BODY_PREFIX = r"^【\s*华语社区(?:PH)?\s*，"   # 兼容“【华语社区,” 或 “【华语社区PH，”等
+
+def parse_from_raw(raw_text: str):
+    """
+    规则：
+    1) 取第一条非空行，若不以“【华语社区(…)，”开头，则视为标题；
+    2) 正文从第一条以“【华语社区(…)，”开头的段落开始（含该段），
+       若找不到这个标记，则标题=第一非空行，正文=除第一行外的剩余全文。
+    """
+    if not raw_text:
+        return "", ""
+    # 统一换行 & 去掉多余空白
+    txt = re.sub(r"\r\n|\r", "\n", str(raw_text)).strip()
+
+    lines = [ln.strip() for ln in txt.split("\n")]
+    non_empty = [ln for ln in lines if ln]
+
+    if not non_empty:
+        return "", ""
+
+    # 找正文起始（第一段以“【华语社区”开头）
+    body_start_idx = None
+    for i, ln in enumerate(lines):
+        if re.match(RAW_BODY_PREFIX, ln):
+            body_start_idx = i
+            break
+
+    # 标题：第一条非空且不是“【华语社区…”的行
+    title = ""
+    for ln in lines:
+        if not ln:
+            continue
+        if re.match(RAW_BODY_PREFIX, ln):
+            # 这一行是正文标记，跳过，标题继续往后找
+            continue
+        title = ln.strip("　 \t")
+        break
+
+    # 正文
+    if body_start_idx is not None:
+        content = "\n".join(lines[body_start_idx:]).strip()
+    else:
+        # 没有标记：用“第一非空行”当标题，剩余当正文
+        if title:
+            # 找到标题在原文中的位置，正文为其后的所有行
+            used = False
+            rest = []
+            for ln in lines:
+                if not used and ln.strip() == title:
+                    used = True
+                    continue
+                if used:
+                    rest.append(ln)
+            content = "\n".join(rest).strip()
+        else:
+            # 无法判定就整篇作为正文
+            content = txt
+
+    return title, content
 
 AUTH_HEADER = {
     "Authorization": b64_auth(WP_USER, WP_APP_PASSWORD),
@@ -120,6 +182,22 @@ def upload_featured_media(url):
 def get_post_by_slug(slug):
     res = wp_get("posts", params={"slug": slug, "status": "any"})
     return res[0] if isinstance(res, list) and res else None
+
+        # —— 自动分拣：如果缺 title 或 content，并且 raw 有内容，就自动解析 ——
+        title = str(row.get("title", "")).strip()
+        content = str(row.get("content", "")).strip()
+        raw_blob = str(row.get("raw", "")).strip()
+
+        if raw_blob and (not title or not content):
+            auto_title, auto_content = parse_from_raw(raw_blob)
+            if not title and auto_title:
+                row["title"] = auto_title
+                title = auto_title
+            if not content and auto_content:
+                row["content"] = auto_content
+                content = auto_content
+
+        # 解析后如果仍然缺字段，让后续校验报错（会在日志显示具体行号）
 
 
 def create_or_update_post(row):
