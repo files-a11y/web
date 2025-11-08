@@ -199,27 +199,39 @@ def html_strip_sample(html: str, limit=220) -> str:
 # WordPress
 # ---------------------
 def wp_create_or_update(title: str, content: str, status: str = WP_DEFAULT_STATUS,
-                        categories: List[int] = None, tags: List[int] = None,
-                        post_id: str = "") -> Dict[str, Any]:
+                        categories: list[int] | None = None, tags: list[int] | None = None,
+                        post_id: str = "") -> dict:
     base = f"{WP_BASE_URL}/wp-json/wp/v2/posts"
-    data = {
-        "title": title,
-        "content": content,
-        "status": status
-    }
-    if categories:
-        data["categories"] = categories
-    if tags:
-        data["tags"] = tags
 
-    if post_id:
-        url = f"{base}/{post_id}"
-        r = requests.post(url, json=data, auth=(WP_USER, WP_APP_PASSWORD), timeout=60)
-    else:
-        url = base
-        r = requests.post(url, json=data, auth=(WP_USER, WP_APP_PASSWORD), timeout=60)
-    r.raise_for_status()
+    # 安全兜底：title/content/status
+    safe_status = (status or "draft").lower()
+    if safe_status not in {"draft", "publish", "pending", "private"}:
+        safe_status = "draft"
+
+    data = {
+        "title": (title or "").strip() or "(untitled)",
+        "content": (content or "").strip() or "(no content)",
+        "status": safe_status,
+    }
+    # 只有是非空整型数组才传给 WP
+    if categories:
+        data["categories"] = [int(i) for i in categories if isinstance(i, int)]
+    if tags:
+        data["tags"] = [int(i) for i in tags if isinstance(i, int)]
+
+    url = f"{base}/{post_id}" if post_id else base
+    r = requests.post(url, json=data, auth=(WP_USER, WP_APP_PASSWORD), timeout=60)
+
+    if r.status_code >= 400:
+        # 把 WP 的错误信息带出来，便于你在 Sheets 里看到
+        try:
+            err = r.json()
+        except Exception:
+            err = r.text
+        raise RuntimeError(f"WP {r.status_code} error: {err}")
+
     return r.json()
+
 
 
 # ---------------------
