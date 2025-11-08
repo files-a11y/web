@@ -20,9 +20,26 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r web/requirements.txt
+  run: |
+    python -m pip install --upgrade pip
+
+    if [ -f web/requirements.txt ]; then
+      echo "Using web/requirements.txt"
+      pip install -r web/requirements.txt
+    elif [ -f requirements.txt ]; then
+      echo "Using requirements.txt at repo root"
+      pip install -r requirements.txt
+    else
+      echo "requirements.txt not found, installing inline list"
+      pip install google-api-python-client==2.149.0 \
+                  google-auth==2.35.0 \
+                  google-auth-httplib2==0.2.0 \
+                  httplib2==0.22.0 \
+                  requests \
+                  beautifulsoup4
+    fi
+
+
 
       - name: Run app.py (with outer retry)
         env:
