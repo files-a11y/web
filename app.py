@@ -1,112 +1,125 @@
 import os
-import time
 import json
 import requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from bs4 import BeautifulSoup
+from openai import OpenAI
 
-### ========== 读取环境变量 ==========
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-WORKSHEET_NAME = os.getenv("WORKSHEET_NAME")
+# -------------------------
+# ENVIRONMENT VARIABLES
+# -------------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WP_BASE_URL = os.getenv("WP_BASE_URL")
 WP_USER = os.getenv("WP_USER")
 WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD")
-LARK_WEBHOOK_URL = os.getenv("LARK_WEBHOOK_URL")
-
-# ✅ Facebook
 FB_PAGE_ID = os.getenv("FB_PAGE_ID")
 FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN")
-FB_API_VERSION = os.getenv("FB_API_VERSION", "v19.0")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+WORKSHEET_NAME = os.getenv("WORKSHEET_NAME")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-### ========== Google Sheets ==========
-def get_sheet():
-    creds_json = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
-    creds = Credentials.from_service_account_info(creds_json, scopes=["https://www.googleapis.com/auth/spreadsheets"])
-    sheet = build("sheets", "v4", credentials=creds).spreadsheets()
-    return sheet
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-### ========== 提取内容 (用于制作 FB caption short) ==========
-def extract_first_paragraph(html: str, limit=200):
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text("\n")
-        return text[:limit].replace("\n", "").strip()
-    except:
-        return ""
+# -------------------------
+# GOOGLE SHEETS
+# -------------------------
+def get_sheet_data():
+    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds = Credentials.from_service_account_info(
+        service_account_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
 
-### ========== 发布到 WordPress ==========
-def publish_to_wordpress(title, content, wp_status="publish", tags=None, categories=None):
-    url = f"{WP_BASE_URL}/wp-json/wp/v2/posts"
-    data = {
+    sheets_service = build("sheets", "v4", credentials=creds)
+    sheet = sheets_service.spreadsheets()
+
+    result = sheet.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{WORKSHEET_NAME}!A:Z"
+    ).execute()
+
+    return result.get("values", [])
+
+# -------------------------
+# CHATGPT — FACEBOOK CAPTION GENERATION
+# -------------------------
+def generate_fb_caption(title, content):
+    prompt = f"""
+你是菲律宾华文媒体编辑。请将以下新闻内容缩短为适合 Facebook 的 caption：
+- 必须是简体中文
+- 保持新闻事实性
+- 添加 5-10 个相关 Hashtags
+
+标题：{title}
+内容：{content}
+
+输出格式：
+Caption:
+Hashtags:
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-5",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.choices[0].message["content"]
+
+# -------------------------
+# WORDPRESS POST
+# -------------------------
+def publish_to_wordpress(title, content, categories, tags):
+    wp_url = f"{WP_BASE_URL}/wp-json/wp/v2/posts"
+
+    post = {
         "title": title,
         "content": content,
-        "status": wp_status
+        "status": "publish",
+        "categories": categories,
+        "tags": tags,
     }
 
-    if tags:
-        data["tags"] = tags
-    if categories:
-        data["categories"] = categories
+    res = requests.post(
+        wp_url,
+        json=post,
+        auth=(WP_USER, WP_APP_PASSWORD)
+    )
 
-    res = requests.post(url, json=data, auth=(WP_USER, WP_APP_PASSWORD))
-    res.raise_for_status()
     return res.json()
 
-### ========== FB 贴文函数 ==========
-def build_fb_caption(title: str, summary: str, link: str, header: str):
-    caption = f"""{header}{title}
-{summary}
-原文阅读：{link}"""
-    return caption[:1800]  # FB 限制 2000 字
-
-def post_to_facebook(page_id, token, caption, link):
-    time.sleep(1800)  # ✅ 延迟30分钟
-    url = f"https://graph.facebook.com/{FB_API_VERSION}/{page_id}/feed"
-    data = {
-        "message": caption,
-        "link": link,
-        "access_token": token,
-    }
-    r = requests.post(url, data=data)
-    r.raise_for_status()
-    return r.json()
-
-### ========== Lark 通知 ==========
-def notify_lark(msg: str):
-    requests.post(LARK_WEBHOOK_URL, json={"msg_type": "text", "content": {"text": msg}})
-
-### ========== 主流程 ==========
+# -------------------------
+# MAIN PROCESS
+# -------------------------
 def main():
-    sheet = get_sheet()
-    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{WORKSHEET_NAME}!A2:F999").execute()
-    rows = result.get("values", [])
+    rows = get_sheet_data()
 
-    for idx, row in enumerate(rows, start=2):
-        title = row[0].strip()
-        content = row[1].strip()
-        status = row[2].strip().lower()
-        fb_header = row[3] if len(row) > 3 else "【华语社区PH】"
-        fb_caption_short = row[4] if len(row) > 4 else extract_first_paragraph(content)
+    header = rows[0]
+    col_index = {col: idx for idx, col in enumerate(header)}
 
-        if status != "ready":
+    for row in rows[1:]:
+        status = row[col_index["status"]].strip()
+        if status.lower() != "ready":
             continue
 
-        post = publish_to_wordpress(title, content, "publish", tags=[10], categories=[3])
-        wp_link = post["link"]
+        title = row[col_index["title"]]
+        content = row[col_index["content"]]
+        categories = row[col_index["categories"]]
+        tags = row[col_index["tags"]]
 
-        caption = build_fb_caption(title, fb_caption_short, wp_link, fb_header)
+        print(f"🔄 Publishing: {title}")
 
-        post_to_facebook(FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN, caption, wp_link)
+        # ✅ Generate Facebook caption
+        fb_caption = generate_fb_caption(title, content)
 
-        sheet.values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{WORKSHEET_NAME}!C{idx}",
-            valueInputOption="RAW",
-            body={"values": [["done"]]}
-        ).execute()
+        # ✅ Publish to WP
+        wp_response = publish_to_wordpress(title, content, categories, tags)
 
-        notify_lark(f"✅ WP + FB 完成：{title}")
+        print("✅ WP Published:", wp_response.get("link"))
+
+        # ✅ Update row to DONE (optional - 可加)
+
+    print("✅ All done.")
 
 if __name__ == "__main__":
     main()
