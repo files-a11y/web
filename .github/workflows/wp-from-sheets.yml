@@ -5,6 +5,11 @@ on:
     - cron: "0 4 * * *"   # 每天 12:00 (Asia/Manila=UTC+8)
   workflow_dispatch:
 
+- name: Install dependencies
+  run: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+
 jobs:
   run:
     runs-on: ubuntu-latest
