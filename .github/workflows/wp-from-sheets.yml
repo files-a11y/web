@@ -1,10 +1,13 @@
-name: Sheets → WordPress → Facebook
+name: Sheets → WordPress (+ optional Facebook)
 
 on:
-  workflow_dispatch:
-  # 如需定时运行，取消下面的注释并调整时间（UTC）
+  workflow_dispatch: {}
+  # 如需定时运行，取消注释并调整 UTC 时间
   # schedule:
-  #   - cron: "0 3 * * *"
+  #   - cron: "0 4 * * *"  # 每天 12:00 PH(+08) = 04:00 UTC
+
+permissions:
+  contents: read
 
 jobs:
   run:
@@ -20,47 +23,59 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
+        run: |
+          python -m pip install --upgrade pip
 
-    if [ -f web/requirements.txt ]; then
-      echo "Using web/requirements.txt"
-      pip install -r web/requirements.txt
-    elif [ -f requirements.txt ]; then
-      echo "Using requirements.txt at repo root"
-      pip install -r requirements.txt
-    else
-      echo "requirements.txt not found, installing inline list"
-      pip install google-api-python-client==2.149.0 \
-                  google-auth==2.35.0 \
-                  google-auth-httplib2==0.2.0 \
-                  httplib2==0.22.0 \
-                  requests \
-                  beautifulsoup4
-    fi
+          if [ -f web/requirements.txt ]; then
+            echo "Using web/requirements.txt"
+            pip install -r web/requirements.txt
+          elif [ -f requirements.txt ]; then
+            echo "Using requirements.txt at repo root"
+            pip install -r requirements.txt
+          else
+            echo "requirements.txt not found, installing inline list"
+            pip install google-api-python-client==2.149.0 \
+                        google-auth==2.35.0 \
+                        google-auth-httplib2==0.2.0 \
+                        httplib2==0.22.0 \
+                        requests \
+                        beautifulsoup4
+          fi
 
-
-
-      - name: Run app.py (with outer retry)
+      - name: Run app.py (with retry)
         env:
-          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-          WP_USER: ${{ secrets.WP_USER }}
-          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          # —— Google Sheets ——
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-          # 可选：
-          FB_API_VERSION: ${{ secrets.FB_API_VERSION }}
-          FB_DELAY_MINUTES: ${{ secrets.FB_DELAY_MINUTES }}
-          WP_AUTO_CREATE_TERMS: ${{ secrets.WP_AUTO_CREATE_TERMS }}
+          SPREADSHEET_ID:             ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_NAME:             ${{ secrets.WORKSHEET_NAME }}
+
+          # —— WordPress REST ——
+          WP_BASE_URL:       ${{ secrets.WP_BASE_URL }}
+          WP_USER:           ${{ secrets.WP_USER }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          DEFAULT_AUTHOR_FALLBACK: ${{ secrets.DEFAULT_AUTHOR_FALLBACK }}
+
+          # —— Lark 通知（可选）——
+          LARK_WEBHOOK_URL:  ${{ secrets.LARK_WEBHOOK_URL }}
+
+          # —— Facebook（可选）——
+          FB_API_VERSION:        ${{ secrets.FB_API_VERSION }}
+          FB_PAGE_ACCESS_TOKEN:  ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          FB_PAGE_ID:            ${{ secrets.FB_PAGE_ID }}
+          # 如果没在 Secrets 里设置，代码里可用默认值；这里给个兜底
+          FB_DELAY_MINUTES:      ${{ secrets.FB_DELAY_MINUTES || 30 }}
         run: |
           set -e
-          for i in 1 2 3; do
-            echo "Attempt #$i"
-            python web/app.py && break || {
-              echo "Run failed, sleep $((i*10))s and retry..."
-              sleep $((i*10))
-            }
+          for i in 1 2; do
+            echo "Attempt $i running app.py ..."
+            if python web/app.py; then
+              echo "Success."
+              break
+            fi
+            if [ "$i" -eq 2 ]; then
+              echo "Failed after $i attempts."
+              exit 1
+            fi
+            echo "Retrying in 10s..."
+            sleep 10
           done
