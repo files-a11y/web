@@ -330,13 +330,17 @@ def process():
                 fb_caption_short = fallback
 
         # 3) 解析分类与标签（数字ID或逗号分隔的数字）
-        def parse_int_list(s: str) -> List[int]:
-            out = []
-            for x in (s or "").replace("，", ",").split(","):
-                x = x.strip()
-                if x.isdigit():
-                    out.append(int(x))
-            return out
+        def parse_int_list(s: str) -> list[int]:
+             out = []
+              for x in (s or "").replace("，", ",").split(","):
+              x = x.strip()
+            if not x:
+            continue
+              if x.isdigit():
+            out.append(int(x))
+        # 若不是数字，直接忽略，避免 WP 400
+          return out
+
 
         categories = parse_int_list(categories_raw)
         tags = parse_int_list(tags_raw)
