@@ -1,9 +1,9 @@
 name: WP Publish From Google Sheets
 
 on:
-  workflow_dispatch:   # 允许在 GitHub 上手动触发
+  workflow_dispatch:
   schedule:
-    - cron: "0 4 * * *"   # 每天早上 12PM PH time (UTC+8) 自动执行
+    - cron: "0 4 * * *"
 
 jobs:
   publish:
@@ -25,4 +25,13 @@ jobs:
 
     - name: Run publisher script (app.py)
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_K
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+        WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+        WP_USER: ${{ secrets.WP_USER }}
+        WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+        FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+      run: python app.py
