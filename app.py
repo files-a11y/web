@@ -67,7 +67,15 @@ LARK_WEBHOOK_URL = os.getenv("LARK_WEBHOOK_URL")
 
 # 发布控制
 WP_DEFAULT_STATUS = os.getenv("WP_DEFAULT_STATUS", "draft")  # 可改为 "publish"
-FB_DELAY_MINUTES = int(os.getenv("FB_DELAY_MINUTES", "30"))  # Facebook 延迟发布分钟数
+def env_int(name: str, default: int) -> int:
+    v = os.getenv(name)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+FB_DELAY_MINUTES = env_int("FB_DELAY_MINUTES", 30)  # Facebook 延迟发布分钟数
+
 
 
 # ---------------------
