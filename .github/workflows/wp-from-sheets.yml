@@ -1,81 +1,68 @@
-name: Sheets → WordPress (+ optional Facebook)
+name: Google Sheets ➜ WordPress Auto Publisher
 
 on:
-  workflow_dispatch: {}
-  # 如需定时运行，取消注释并调整 UTC 时间
-  # schedule:
-  #   - cron: "0 4 * * *"  # 每天 12:00 PH(+08) = 04:00 UTC
-
-permissions:
-  contents: read
+  schedule:
+    - cron: "0 */2 * * *"   # 每 2 小时跑一次
+  workflow_dispatch:        # 支持手动运行
 
 jobs:
-  run:
+  publish:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # Step 1: Checkout repo
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+    # Step 2: Setup Python
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
+    # Step 3: Install dependencies
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then
+          echo "Using requirements.txt"
+          pip install -r requirements.txt
+        else
+          echo "requirements.txt not found"
+          exit 1
+        fi
 
-          if [ -f web/requirements.txt ]; then
-            echo "Using web/requirements.txt"
-            pip install -r web/requirements.txt
-          elif [ -f requirements.txt ]; then
-            echo "Using requirements.txt at repo root"
-            pip install -r requirements.txt
-          else
-            echo "requirements.txt not found, installing inline list"
-            pip install google-api-python-client==2.149.0 \
-                        google-auth==2.35.0 \
-                        google-auth-httplib2==0.2.0 \
-                        httplib2==0.22.0 \
-                        requests \
-                        beautifulsoup4
+    # Step 4: Run app.py (带重试 + 自动检测路径)
+    - name: Run app.py (with retry)
+      env:
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        SPREADSHEET_ID:             ${{ secrets.SPREADSHEET_ID }}
+        WORKSHEET_NAME:             ${{ secrets.WORKSHEET_NAME }}
+        WP_BASE_URL:                ${{ secrets.WP_BASE_URL }}
+        WP_USER:                    ${{ secrets.WP_USER }}
+        WP_APP_PASSWORD:            ${{ secrets.WP_APP_PASSWORD }}
+        LARK_WEBHOOK_URL:           ${{ secrets.LARK_WEBHOOK_URL }}
+        FB_API_VERSION:             ${{ secrets.FB_API_VERSION }}
+        FB_PAGE_ACCESS_TOKEN:       ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+        FB_PAGE_ID:                 ${{ secrets.FB_PAGE_ID }}
+        FB_DELAY_MINUTES:           ${{ secrets.FB_DELAY_MINUTES }}
+      run: |
+        set -e
+
+        echo "🟢 Running app.py from repo root..."
+        ls -lah
+
+        APP="app.py"
+        for i in 1 2; do
+          echo "Attempt $i..."
+          if python "$APP"; then
+            echo "✅ RUN SUCCESS"
+            exit 0
           fi
 
-      - name: Run app.py (with retry)
-        env:
-          # —— Google Sheets ——
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          SPREADSHEET_ID:             ${{ secrets.SPREADSHEET_ID }}
-          WORKSHEET_NAME:             ${{ secrets.WORKSHEET_NAME }}
+          echo "⚠️ Failed, retrying after 10s..."
+          sleep 10
+        done
 
-          # —— WordPress REST ——
-          WP_BASE_URL:       ${{ secrets.WP_BASE_URL }}
-          WP_USER:           ${{ secrets.WP_USER }}
-          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
-          DEFAULT_AUTHOR_FALLBACK: ${{ secrets.DEFAULT_AUTHOR_FALLBACK }}
-
-          # —— Lark 通知（可选）——
-          LARK_WEBHOOK_URL:  ${{ secrets.LARK_WEBHOOK_URL }}
-
-          # —— Facebook（可选）——
-          FB_API_VERSION:        ${{ secrets.FB_API_VERSION }}
-          FB_PAGE_ACCESS_TOKEN:  ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-          FB_PAGE_ID:            ${{ secrets.FB_PAGE_ID }}
-          # 如果没在 Secrets 里设置，代码里可用默认值；这里给个兜底
-          FB_DELAY_MINUTES:      ${{ secrets.FB_DELAY_MINUTES || 30 }}
-        run: |
-          set -e
-          for i in 1 2; do
-            echo "Attempt $i running app.py ..."
-            if python web/app.py; then
-              echo "Success."
-              break
-            fi
-            if [ "$i" -eq 2 ]; then
-              echo "Failed after $i attempts."
-              exit 1
-            fi
-            echo "Retrying in 10s..."
-            sleep 10
-          done
+        echo "❌ Failed after 2 attempts."
+        exit 1
