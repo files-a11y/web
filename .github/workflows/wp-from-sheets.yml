@@ -1,12 +1,12 @@
-name: WP Publish From Google Sheets
+name: FilChiOC Auto Publisher
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # 允许手动触发
   schedule:
-    - cron: "0 4 * * *"
+    - cron: "0 2 * * *"   # 每天 10:00 AM PH (UTC+8) 运行 -> 这里用 UTC 2:00
 
 jobs:
-  publish:
+  run-bot:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,15 +23,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run publisher script (app.py)
+    - name: Run app.py
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        # —— 必填 Secrets ——
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
         WP_USER: ${{ secrets.WP_USER }}
         WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
         FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-      run: python app.py
+
+        # —— 可选 Secrets（有就用，没有用默认值）——
+        LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+        FB_API_VERSION: ${{ secrets.FB_API_VERSION }}
+        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+        WP_DEFAULT_STATUS: ${{ secrets.WP_DEFAULT_STATUS }}   # 默认 draft，可设 publish
+        FB_DELAY_MINUTES: ${{ secrets.FB_DELAY_MINUTES }}     # 默认 30
+
+      run: |
+        python app.py
