@@ -1,47 +1,49 @@
-name: FilChiOC Auto Publisher
+name: Sheets → WordPress → Facebook
 
 on:
-  workflow_dispatch:   # 允许手动触发
-  schedule:
-    - cron: "0 2 * * *"   # 每天 10:00 AM PH (UTC+8) 运行 -> 这里用 UTC 2:00
+  workflow_dispatch:
+  # 如需定时运行，取消下面的注释并调整时间（UTC）
+  # schedule:
+  #   - cron: "0 3 * * *"
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r web/requirements.txt
 
-    - name: Run app.py
-      env:
-        # —— 必填 Secrets ——
-        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
-        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-        WP_USER: ${{ secrets.WP_USER }}
-        WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-        FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-
-        # —— 可选 Secrets（有就用，没有用默认值）——
-        LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
-        FB_API_VERSION: ${{ secrets.FB_API_VERSION }}
-        OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-        WP_DEFAULT_STATUS: ${{ secrets.WP_DEFAULT_STATUS }}   # 默认 draft，可设 publish
-        FB_DELAY_MINUTES: ${{ secrets.FB_DELAY_MINUTES }}     # 默认 30
-
-      run: |
-        python app.py
+      - name: Run app.py (with outer retry)
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USER: ${{ secrets.WP_USER }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_PAGE_ACCESS_TOKEN: ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
+          # 可选：
+          FB_API_VERSION: ${{ secrets.FB_API_VERSION }}
+          FB_DELAY_MINUTES: ${{ secrets.FB_DELAY_MINUTES }}
+          WP_AUTO_CREATE_TERMS: ${{ secrets.WP_AUTO_CREATE_TERMS }}
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt #$i"
+            python web/app.py && break || {
+              echo "Run failed, sleep $((i*10))s and retry..."
+              sleep $((i*10))
+            }
+          done
