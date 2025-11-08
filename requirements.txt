@@ -1,6 +1,6 @@
-google-api-python-client==2.149.0
-google-auth==2.35.0
-google-auth-httplib2==0.2.0
-httplib2==0.22.0
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
 requests
 beautifulsoup4
