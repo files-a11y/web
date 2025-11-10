@@ -1,68 +1,46 @@
-name: Google Sheets ➜ WordPress Auto Publisher
+name: wp-from-sheets
 
 on:
-  schedule:
-    - cron: "0 */2 * * *"   # 每 2 小时跑一次
-  workflow_dispatch:        # 支持手动运行
+  workflow_dispatch: {}
+
+concurrency:
+  group: wp-from-sheets-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-    # Step 1: Checkout repo
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout Repo
+        uses: actions/checkout@v4
 
-    # Step 2: Setup Python
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    # Step 3: Install dependencies
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then
-          echo "Using requirements.txt"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-        else
-          echo "requirements.txt not found"
-          exit 1
-        fi
 
-    # Step 4: Run app.py (带重试 + 自动检测路径)
-    - name: Run app.py (with retry)
-      env:
-        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        SPREADSHEET_ID:             ${{ secrets.SPREADSHEET_ID }}
-        WORKSHEET_NAME:             ${{ secrets.WORKSHEET_NAME }}
-        WP_BASE_URL:                ${{ secrets.WP_BASE_URL }}
-        WP_USER:                    ${{ secrets.WP_USER }}
-        WP_APP_PASSWORD:            ${{ secrets.WP_APP_PASSWORD }}
-        LARK_WEBHOOK_URL:           ${{ secrets.LARK_WEBHOOK_URL }}
-        FB_API_VERSION:             ${{ secrets.FB_API_VERSION }}
-        FB_PAGE_ACCESS_TOKEN:       ${{ secrets.FB_PAGE_ACCESS_TOKEN }}
-        FB_PAGE_ID:                 ${{ secrets.FB_PAGE_ID }}
-        FB_DELAY_MINUTES:           ${{ secrets.FB_DELAY_MINUTES }}
-      run: |
-        set -e
-
-        echo "🟢 Running app.py from repo root..."
-        ls -lah
-
-        APP="app.py"
-        for i in 1 2; do
-          echo "Attempt $i..."
-          if python "$APP"; then
-            echo "✅ RUN SUCCESS"
-            exit 0
-          fi
-
-          echo "⚠️ Failed, retrying after 10s..."
-          sleep 10
-        done
-
-        echo "❌ Failed after 2 attempts."
-        exit 1
+      - name: Run app.py (auto publish)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID:             ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_NAME:             ${{ secrets.WORKSHEET_NAME }}
+          WP_BASE_URL:                ${{ secrets.WP_BASE_URL }}
+          WP_USER:                    ${{ secrets.WP_USER }}
+          WP_APP_PASSWORD:            ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          python app.py
