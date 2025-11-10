@@ -101,33 +101,40 @@ def col_idx_to_letter(idx: int) -> str:
 # 分段逻辑
 # -----------------------
 
-def split_from_raw(raw: str) -> Tuple[str, str]:
+# --- 分离 RAW 成 title + content ---
+def extract_title_content(raw):
     """
-    规则：
-    1) 标题 = 第一段（第一个非空段落）
-    2) 正文 = 从首个以“【华语社区”开头的段落开始；若找不到，就从第二段开始
-    3) 段落 -> <p>包裹
+    拆分 RAW：
+    ✅ 第一段为空行前为 title
+    ✅ 找到「【华语社区」开头作为正文
     """
     if not raw:
-        return "", ""
-    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
-    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
-    if not blocks:
-        return "", ""
-    title = blocks[0]
-    focus_idx = next((i for i, b in enumerate(blocks) if b.startswith("【华语社区")), None)
-    body_blocks = blocks[1:] if focus_idx is None else blocks[focus_idx:]
-    body_html = "\n".join(f"<p>{html.escape(p)}</p>" for p in body_blocks)
-    return title, body_html
+        return None, None
 
-def append_images_to_html(html_body: str, images_csv: str) -> str:
-    if not images_csv.strip():
-        return html_body
-    urls = [u.strip() for u in re.split(r"[,\n，；;]", images_csv) if u.strip()]
-    if not urls:
-        return html_body
-    imgs = "\n".join([f'<p><img src="{html.escape(u)}" referrerpolicy="no-referrer" /></p>' for u in urls])
-    return html_body + ("\n" if html_body else "") + imgs
+    # 按换行分段
+    lines = [line.strip() for line in raw.split("\n") if line.strip()]
+
+    if not lines:
+        return None, None
+
+    # ✅ 标题 = 第一行（第一段）
+    title = lines[0]
+
+    # ✅ 找内文开头，找「【华语社区」或落地段落
+    content_start = None
+    for idx, line in enumerate(lines):
+        if line.startswith("【华语社区"):
+            content_start = idx
+            break
+
+    if content_start is not None:
+        content = "\n\n".join(lines[content_start:])
+    else:
+        # 若没有【华语社区，使用除第一段外的全部
+        content = "\n\n".join(lines[1:])
+
+    return title, content
+
 
 # -----------------------
 # WordPress
