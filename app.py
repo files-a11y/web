@@ -1,186 +1,300 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, json, time, re
+import os
+import json
+import base64
+import html
+import re
+import time
+from typing import Dict, List, Tuple, Any, Optional
+
 import requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# ====== 环境变量 ======
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-WORKSHEET_NAME = os.getenv("WORKSHEET_NAME")
-WP_BASE_URL = os.getenv("WP_BASE_URL")
-WP_USER = os.getenv("WP_USER")
-WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD")
+# -----------------------
+# 环境变量（GitHub Secrets）
+# -----------------------
+SHEET_ID = os.getenv("SPREADSHEET_ID")                          # 必填
+SHEET_RANGE = os.getenv("WORKSHEET_NAME", "Sheet1")             # 只写工作表名即可
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# 只发布标记为 ready 的行；发布后写回 done
+WP_BASE_URL = os.getenv("WP_BASE_URL", "").rstrip("/")
+WP_USER = os.getenv("WP_USER", "")
+WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD", "")
+
+# 可选：Category & Tags 的默认值（当行里没填时）
+DEFAULT_CATEGORY = os.getenv("DEFAULT_CATEGORY", "").strip()     # 例：Philippines
+DEFAULT_TAGS = os.getenv("DEFAULT_TAGS", "").strip()             # 例：菲律宾、菲律宾新闻
+
+# 列名约定（首行表头）
+COL_RAW      = "RAW"            # 一整段原文（含标题 + 正文）
+COL_STATUS   = "status"         # ready 才会处理；处理后写 done
+COL_WP_ID    = "wp_id"          # 成功后写入 post id
+COL_CATEGORY = "category"       # 可填中文名或英文名，多个用逗号
+COL_TAGS     = "tags"           # 多个用顿号/中文逗号/英文逗号
+COL_IMAGES   = "images"         # 可选：逗号分隔的图片 URL，会追加到正文尾部
+
 STATUS_READY = "ready"
 STATUS_DONE  = "done"
 
-# ====== Google Sheets ======
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_info(json.loads(GOOGLE_SERVICE_ACCOUNT_JSON), scopes=SCOPES)
-sheets = build("sheets", "v4", credentials=creds)
-SHEET = sheets.spreadsheets()
+# -----------------------
+# Google Sheets
+# -----------------------
 
-# ====== WordPress ======
-WP_API = f"{WP_BASE_URL.rstrip('/')}/wp-json/wp/v2/posts"
+def get_sheets_service():
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON")
+    data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds = Credentials.from_service_account_info(
+        data, scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return build("sheets", "v4", credentials=creds)
 
-def get_values(a1):
-    return SHEET.values().get(spreadsheetId=SPREADSHEET_ID, range=a1).execute().get("values", [])
+def read_sheet_as_dicts(svc, spreadsheet_id: str, sheet_name: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    rng = f"{sheet_name}!A1:ZZ9999"
+    resp = svc.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=rng).execute()
+    values = resp.get("values", [])
+    if not values:
+        return [], []
+    header = [h.strip() for h in values[0]]
+    rows = []
+    for i, raw in enumerate(values[1:], start=2):  # Excel 行号
+        row_dict = {}
+        for j, h in enumerate(header):
+            row_dict[h] = raw[j].strip() if j < len(raw) else ""
+        row_dict["_row_index"] = i  # 记住行号，回写用
+        rows.append(row_dict)
+    return header, rows
 
-def set_values(a1, values):
-    SHEET.values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=a1,
-        valueInputOption="RAW",
-        body={"values": values}
+def update_sheet_row(svc, spreadsheet_id: str, sheet_name: str, row_index: int, header: List[str], new_values: Dict[str, str]):
+    """按列名定点更新这一行的多个单元格"""
+    if not new_values:
+        return
+    # 找出要更新的列
+    data = []
+    for col_name, val in new_values.items():
+        if col_name not in header:
+            continue
+        col_idx = header.index(col_name)  # 0-based
+        col_letter = col_idx_to_letter(col_idx)
+        rng = f"{sheet_name}!{col_letter}{row_index}:{col_letter}{row_index}"
+        data.append({
+            "range": rng,
+            "values": [[val]],
+        })
+    if not data:
+        return
+    body = {"valueInputOption": "RAW", "data": data}
+    svc.spreadsheets().values().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=body
     ).execute()
 
-def find_col_index_map(headers):
-    """
-    根据表头自动识别列：支持常见写法（不区分大小写，去掉空格）
-    建议表头：Status, Title, Content, Categories, Tags, PostID（可选）
-    """
-    key_map = {
-        "status": ["status", "状态"],
-        "title": ["title", "标题"],
-        "content": ["content", "正文", "内文", "内容"],
-        "categories": ["categories", "category", "分类"],
-        "tags": ["tags", "tag", "标签"],
-        "postid": ["postid", "post_id", "wpid", "发布id", "文章id"],
-    }
-    idx = {}
-    norm = [re.sub(r"\s+", "", h or "").lower() for h in headers]
-    for k, aliases in key_map.items():
-        for i, h in enumerate(norm):
-            if h in aliases:
-                idx[k] = i
-                break
-    return idx
+def col_idx_to_letter(idx: int) -> str:
+    """0->A, 25->Z, 26->AA"""
+    s = ""
+    idx += 1
+    while idx:
+        idx, r = divmod(idx - 1, 26)
+        s = chr(65 + r) + s
+    return s
 
-def parse_title_content(raw_title, raw_content):
+# -----------------------
+# 分段逻辑：从 RAW 里拆标题与正文
+# -----------------------
+
+def split_from_raw(raw: str) -> Tuple[str, str]:
     """
     规则：
-    1) 如果表里给了 Title，就用 Title
-    2) 否则从 Content 里取第一行作为 Title（去掉空格和标点装饰）
-    3) Content 优先截取以“【华语社区”开头的第一段；找不到就用整段 Content
+    1) 标题 = 第一段（第一个非空段落）
+    2) 正文 = 从首个以“【华语社区”开头的段落开始到结尾
+       - 如果找不到“【华语社区”，则从第二段开始
+    3) 段落 -> <p>包裹
     """
-    title = (raw_title or "").strip()
-    content = (raw_content or "").strip()
+    if not raw:
+        return "", ""
 
-    # 标题缺失时，用正文第一行
-    if not title:
-        first_line = content.splitlines()[0] if content else ""
-        title = re.sub(r"^\s*[-—•\*#\d\.（）()\[\]]*\s*", "", first_line).strip()
+    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # 按“空行”或“换行”分段：既兼容空行，也兼容单换行
+    # 先按照双换行切，再把单行残余合并
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if not blocks:
+        return "", ""
 
-    # 取“【华语社区”开头的第一段
-    if "【华语社区" in content:
-        # 按空行分段
-        paras = re.split(r"\n\s*\n", content.strip())
-        picked = None
-        for p in paras:
-            if p.strip().startswith("【华语社区"):
-                picked = p.strip()
+    # 标题：第一段
+    title = blocks[0]
+
+    # 找到从“【华语社区”开头的段
+    focus_idx = None
+    for i, b in enumerate(blocks):
+        if b.startswith("【华语社区"):
+            focus_idx = i
+            break
+
+    if focus_idx is None:
+        # 没找到，则正文 = 第二段开始（如果只有一段，就为空）
+        body_blocks = blocks[1:] if len(blocks) > 1 else []
+    else:
+        body_blocks = blocks[focus_idx:]
+
+    # 转 HTML 段落
+    body_html = "\n".join(f"<p>{html.escape(p)}</p>" for p in body_blocks)
+    return title, body_html
+
+def append_images_to_html(html_body: str, images_csv: str) -> str:
+    """可选：把 images 列的 URL 附到正文尾部"""
+    if not images_csv.strip():
+        return html_body
+    urls = [u.strip() for u in re.split(r"[,\n，；;]", images_csv) if u.strip()]
+    if not urls:
+        return html_body
+    imgs = "\n".join([f'<p><img src="{html.escape(u)}" referrerpolicy="no-referrer" /></p>' for u in urls])
+    return html_body + "\n" + imgs
+
+# -----------------------
+# WordPress
+# -----------------------
+
+def wp_auth_header(user: str, app_password: str) -> Dict[str, str]:
+    token = base64.b64encode(f"{user}:{app_password}".encode("utf-8")).decode("utf-8")
+    return {"Authorization": f"Basic {token}"}
+
+def wp_ensure_term_ids(kind: str, names: List[str]) -> List[int]:
+    """
+    kind: 'categories' | 'tags'
+    names: 通过 name 精确匹配；找不到就尝试创建（需要 WP 允许创建分类/标签）
+    """
+    ids = []
+    for name in names:
+        name = name.strip()
+        if not name:
+            continue
+        # 查
+        r = requests.get(
+            f"{WP_BASE_URL}/wp-json/wp/v2/{kind}",
+            params={"search": name, "per_page": 100},
+            headers=wp_auth_header(WP_USER, WP_APP_PASSWORD),
+            timeout=30
+        )
+        r.raise_for_status()
+        found = None
+        for it in r.json():
+            if it.get("name", "").strip().lower() == name.lower():
+                found = it
                 break
-        if picked:
-            content = picked
+        if found:
+            ids.append(int(found["id"]))
+            continue
+        # 创建（若无权限会 401/403，届时让它抛错或忽略）
+        cr = requests.post(
+            f"{WP_BASE_URL}/wp-json/wp/v2/{kind}",
+            headers=wp_auth_header(WP_USER, WP_APP_PASSWORD),
+            json={"name": name},
+            timeout=30
+        )
+        if cr.status_code in (200, 201):
+            ids.append(int(cr.json()["id"]))
+        else:
+            # 创建失败就跳过，不阻塞整篇文章
+            try:
+                cr.raise_for_status()
+            except Exception:
+                pass
+    return ids
 
-    return title, content
+def wp_create_or_update_post(title: str, content_html: str, categories_csv: str, tags_csv: str) -> int:
+    if not title.strip():
+        raise RuntimeError("Title is empty.")
 
-def to_list(s):
-    """逗号/中文逗号分隔转列表，去空"""
-    if not s: return []
-    return [x.strip() for x in re.split(r"[，,]", s) if x.strip()]
+    # 处理分类/标签
+    cats = [c.strip() for c in re.split(r"[,\n，/；;、]", categories_csv or DEFAULT_CATEGORY) if c.strip()]
+    tgs  = [t.strip() for t in re.split(r"[,\n，/；;、]", tags_csv or DEFAULT_TAGS) if t.strip()]
 
-def publish_to_wp(title, content, categories, tags):
+    cat_ids = wp_ensure_term_ids("categories", cats) if cats else []
+    tag_ids = wp_ensure_term_ids("tags", tgs) if tgs else []
+
     payload = {
         "title": title,
-        "content": content,
-        "status": "draft",
-        # 这里 categories/tags 接受的是“名称字符串数组”，你的 WP 需要有配套插件或自定义钩子支持名称创建。
-        # 如果你的站点必须用 taxonomy 的 term_id，请改造成 ID 列（如 cat_ids, tag_ids）再传整数数组。
-        "categories": categories,
-        "tags": tags,
+        "content": content_html,
+        "status": "draft",         # 保持草稿，由你手动发布
+        "categories": cat_ids,
+        "tags": tag_ids,
     }
-    res = requests.post(
-        WP_API,
-        auth=(WP_USER, WP_APP_PASSWORD),
+    r = requests.post(
+        f"{WP_BASE_URL}/wp-json/wp/v2/posts",
+        headers={
+            **wp_auth_header(WP_USER, WP_APP_PASSWORD),
+            "Content-Type": "application/json; charset=utf-8",
+        },
         json=payload,
-        headers={"Content-Type": "application/json"},
-        timeout=60,
+        timeout=60
     )
-    if res.status_code == 201:
-        return res.json().get("id")
-    else:
-        print("❌ WP 失败：", res.status_code, res.text)
-        return None
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"WP create failed: {r.status_code} {r.text}")
+    return int(r.json()["id"])
+
+# -----------------------
+# 主流程
+# -----------------------
+
+def normalize_status(s: str) -> str:
+    return s.strip().lower()
 
 def main():
-    # 读取表：第一行表头，后面数据
-    values = get_values(f"{WORKSHEET_NAME}!A1:Z")
-    if not values:
-        print("表为空")
+    if not (SHEET_ID and WP_BASE_URL and WP_USER and WP_APP_PASSWORD):
+        raise RuntimeError("Missing required env: SPREADSHEET_ID / WP_BASE_URL / WP_USER / WP_APP_PASSWORD")
+
+    sheets = get_sheets_service()
+    header, rows = read_sheet_as_dicts(sheets, SHEET_ID, SHEET_RANGE)
+    if not header:
+        print("Sheet is empty.")
         return
-    headers = values[0]
-    rows = values[1:]
 
-    col = find_col_index_map(headers)
-    required = ["status", "title", "content", "categories", "tags"]
-    for key in required:
-        if key not in col:
-            print(f"⚠️ 缺少表头: {key}（建议添加 {required} 和可选的 PostID）")
-    # PostID 可选
-    has_postid = "postid" in col
+    required_cols = [COL_RAW, COL_STATUS, COL_WP_ID]
+    for c in required_cols:
+        if c not in header:
+            raise RuntimeError(f"Sheet missing required column: {c}")
 
-    for i, row in enumerate(rows, start=2):
-        def get(k):
-            idx = col.get(k)
-            return (row[idx].strip() if (idx is not None and idx < len(row)) else "")
-
-        status = get("status").lower()
+    processed = 0
+    for row in rows:
+        status = normalize_status(row.get(COL_STATUS, ""))
         if status != STATUS_READY:
-            # 跳过非 ready（包含 done）
+            continue
+        raw_text = row.get(COL_RAW, "").strip()
+        if not raw_text:
+            print(f"Row {row['_row_index']}: RAW empty, skip.")
             continue
 
-        raw_title  = get("title")
-        raw_content= get("content")
-        raw_cats   = get("categories")
-        raw_tags   = get("tags")
+        # 1) 拆分：标题 + 正文（从“【华语社区”开始）
+        title, body_html = split_from_raw(raw_text)
 
-        title, content = parse_title_content(raw_title, raw_content)
-        cats = to_list(raw_cats)
-        tags = to_list(raw_tags)
+        # 2) 追加 images（可选）
+        images_csv = row.get(COL_IMAGES, "")
+        body_html = append_images_to_html(body_html, images_csv)
 
-        if not title:
-            print(f"⚠️ 第 {i} 行标题为空，跳过")
+        # 3) 发到 WP
+        try:
+            post_id = wp_create_or_update_post(
+                title=title,
+                content_html=body_html,
+                categories_csv=row.get(COL_CATEGORY, ""),
+                tags_csv=row.get(COL_TAGS, ""),
+            )
+        except Exception as e:
+            print(f"Row {row['_row_index']} create WP failed: {e}")
             continue
 
-        print(f"🚀 发布：row {i} | {title[:40]}")
-        post_id = publish_to_wp(title, content, cats, tags)
+        # 4) 回写：wp_id & status=done
+        update_sheet_row(
+            sheets, SHEET_ID, SHEET_RANGE, row["_row_index"], header,
+            {COL_WP_ID: str(post_id), COL_STATUS: STATUS_DONE}
+        )
+        processed += 1
+        print(f"Row {row['_row_index']} OK -> post_id={post_id}")
 
-        # 写回表：Status 改 done；PostID 写入（如果有）
-        if post_id:
-            row_out = list(row)  # 复制原行
-            # status
-            if col.get("status") is not None:
-                at = col["status"]
-                if at >= len(row_out):
-                    row_out += [""] * (at + 1 - len(row_out))
-                row_out[at] = STATUS_DONE
-            # postid
-            if has_postid:
-                at = col["postid"]
-                if at >= len(row_out):
-                    row_out += [""] * (at + 1 - len(row_out))
-                row_out[at] = str(post_id)
-
-            # 只更新该行（整行 A:Z）
-            set_values(f"{WORKSHEET_NAME}!A{i}:Z{i}", [row_out])
-            print(f"✅ row {i} → done | post_id={post_id}")
-
-        time.sleep(1)
+    print(f"RUN SUCCESS: processed={processed}")
 
 if __name__ == "__main__":
     main()
